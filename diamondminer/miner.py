@@ -30,6 +30,7 @@ class CoulombDiamond:
         # positive slopes (drain lever arm)
         beta1 = (self.top_vertex[1] - self.left_vertex[1]) / (self.top_vertex[0] - self.left_vertex[0])
         beta2 = (self.bottom_vertex[1] - self.right_vertex[1]) / (self.bottom_vertex[0] - self.right_vertex[0])
+
         return 0.5 * (beta1 + beta2)
     
     def gamma(self) -> float:
@@ -139,6 +140,7 @@ class Miner:
                 epsR: Optional[float] = None,
                 oxide_thickness: Optional[float] = None,
                 binary_threshold: float = 1.1,
+                binary_threshold_linear: float = None,
                 blur_sigma: float = 1.0,
                 blur_kernel: tuple = (3,3)) -> None:
         self.epsR = epsR
@@ -153,26 +155,35 @@ class Miner:
         self.ohmic_voltage_per_pixel = np.abs((self.ohmic_data[-1] - self.ohmic_data[0]) / self.current_data_height)
 
         self.binary_threshold = binary_threshold
+        self.binary_threshold_linear = binary_threshold_linear
         self.blur_sigma = blur_sigma
         self.blur_kernel = blur_kernel
     
     def filter_raw_data(self, 
                         current_data: ndarray,
                         binary_threshold: float = 1.1,
+                        binary_threshold_linear: float = None,
                         blur_sigma: float = 1.0,
                         blur_kernel: tuple = (3,3)) -> ndarray:
         assert binary_threshold >= 1
 
-        filtered_current_data = np.log(
-            np.abs(current_data)
-        )
+        if binary_threshold_linear is not None:
+            mask = current_data < binary_threshold_linear 
+            new_data = np.zeros_like(current_data)
 
-        new_data = np.zeros_like(filtered_current_data)
+        else:
+            filtered_current_data = np.log(
+                np.abs(current_data)
+            )            
+            mask = filtered_current_data < binary_threshold * np.nanmax(filtered_current_data)
+            new_data = np.zeros_like(filtered_current_data)
 
-        mask = filtered_current_data < binary_threshold * np.nanmax(filtered_current_data)
 
         new_data[mask] = 255
         new_data = new_data.astype(np.uint8)
+
+        if blur_sigma < 0:
+            return new_data
 
         # Apply Gaussian blur to smooth the image and reduce noise
         filtered_data = cv2.GaussianBlur(
@@ -330,11 +341,13 @@ class Miner:
         self.diamonds = detected_coulomb_diamonds
         return detected_coulomb_diamonds
 
+
     def estimate_temperatures(
         self, 
         diamonds: list[CoulombDiamond], 
         ohmic_value: float,
-        temperature_guess: float = 1) -> list[float]:
+        temperature_guess: float = 1,
+        debug = False) -> list[float]:
     
         fig, axes = plt.subplots()
         # These are in unitless percentages of the figure size. (0,0 is bottom left)
@@ -361,11 +374,25 @@ class Miner:
         temperatures = []
         for i in range(len(diamonds)-1):
             # Get estimated lever arm from neighbouring diamonds
+            if debug:
+                print(f"Processing Diamond {i}, name: {diamonds[i].name}")
             left_diamond = diamonds[i]
             right_diamond = diamonds[i+1]
             left_Vg, left_Vsd = left_diamond.top_vertex
             right_Vg, right_Vsd = right_diamond.top_vertex
             average_lever_arm = (left_diamond.lever_arm() + right_diamond.lever_arm()) / 2
+            if debug:
+                print(f"Left Vertex: {left_diamond.top_vertex}")
+                print(f"Right Vertex: {right_diamond.top_vertex}")
+                print(f"Average Lever Arm: {average_lever_arm}")
+                print(f'Gate data: {self.gate_data}')
+                print(f'Ohmic data: {self.ohmic_data}')
+
+                for val in self.gate_data:
+
+                    if val >= left_Vg and val <= right_Vg:
+                        print(f"Val: {val} >= {left_Vg} and {val} <= {right_Vg}")
+                    
 
             # Filter out the coulomb oscillation between two diamonds
             gate_mask = np.where((self.gate_data >= left_Vg) * (self.gate_data <= right_Vg))[0]
@@ -373,6 +400,12 @@ class Miner:
             P_data_filtered = self.gate_data[gate_mask]
             ohmic_value = self.ohmic_data[ohmic_index]
             oscillation = self.current_data[ohmic_index, gate_mask]
+            if debug:
+                print(f"Gate Mask: {gate_mask}")
+                print(f"Gate Data: {P_data_filtered}")
+                print(f"Ohmic Index: {ohmic_index}")
+                print(f"Ohmic Value: {ohmic_value}")
+                print(f"Oscillation: {oscillation}")
 
             # Fit data to Coulomb peak theoretical formula
             guess = [oscillation.min(), oscillation.max(), np.average(P_data_filtered), temperature_guess]
@@ -445,14 +478,14 @@ class Miner:
 
         return results
     
-    def extract_edges(self, image: ndarray) -> ndarray:
+    def extract_edges(self, image: ndarray, threshold1: int = 0, threshold2: int = 0, apertureSize: int = 3) -> ndarray:
 
         # Perform Canny edge detection
         edges = cv2.Canny(
             image, 
-            0, 
-            0, 
-            apertureSize=3
+            threshold1, 
+            threshold2, 
+            apertureSize=apertureSize
         )
 
         return edges
@@ -484,6 +517,529 @@ class Miner:
         lines = self.filter_duplicate_lines(lines, distance_threshold=distanceThreshold, angle_threshold=angleThreshold)
 
         return lines
+    
+    def process_image(self, data,
+                    rescaling_factor: int = 2, 
+                    morph_kernel_size: Optional[tuple] = (5, 5), 
+                    morph_iterations: Optional[int] = 2, 
+                    blur_kernel_size: Optional[tuple] = (7, 7), 
+                    blur_sigma: Optional[float] = 1, 
+                    threshold_value: Optional[int] = 200,
+                    second_blur = False,
+                    skip_processing = False) -> None:
+        """
+        Increase the resolution of self.current_data by interpolating.
+
+        Perfforms different enhancement operations on the data such as morphological operations, Gaussian blurring, and thresholding.
+        
+        Parameters:
+        rescalingfactor (int): The factor by which to increase the resolution.
+        morph_kernel_size (tuple): The size of the kernel for morphological operations.
+        morph_iterations (int): The number of iterations for morphological operations.
+        blur_kernel_size (tuple): The size of the kernel for Gaussian blurring.
+        blur_sigma (float): The sigma value for Gaussian blurring.
+        threshold_value (int): The threshold value for binary thresholding.
+        second_blur (bool): Whether to perform a second Gaussian blur operation.
+        skip_processing (bool): Whether to skip processing and return the resized data.
+        """
+        if skip_processing:
+            return data
+
+        new_height = self.current_data_height * rescaling_factor
+        new_width = self.current_data_width * rescaling_factor
+
+        
+        # Interpolate the current data to the new resolution
+        resized = cv2.resize(data, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
+
+        # Perform closing if morph_kernel_size and morph_iterations are provided
+        if morph_kernel_size is not None and morph_iterations is not None:
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, morph_kernel_size)
+            resized = cv2.morphologyEx(resized, cv2.MORPH_CLOSE, kernel, iterations=morph_iterations)
+
+        # Perform Gaussian blurring if blur_kernel_size and blur_sigma are provided
+        if blur_kernel_size is not None and blur_sigma is not None and second_blur:
+            resized = cv2.GaussianBlur(resized, blur_kernel_size, blur_sigma)
+
+        # Apply thresholding if threshold_value is provided
+        if threshold_value is not None:
+            _, resized = cv2.threshold(resized, threshold_value, 255, cv2.THRESH_BINARY)
+
+        # Update the dimensions and voltage per pixel values
+        self.current_data_height, self.current_data_width = self.current_data.shape
+        self.gate_voltage_per_pixel /= rescaling_factor
+        self.ohmic_voltage_per_pixel /= rescaling_factor
+        return resized
+    
+    def extract_diamonds_direct(self, 
+                                debug: bool = False,
+                                center_offset: int = 0,
+                                naive_extraction: bool = False,
+                                resolution_factor: int = 2,
+                                min_area: int = 500,
+                                morph_iterations: int = 2,
+                                morph_kernel = (5,5),
+                                second_threshold = 200,
+                                second_blur = False,
+                                skip_advanced_processing = False) -> None:  
+        
+    
+        # Run filter_raw_data on the full dataset
+        filtered_data = self.filter_raw_data(
+            self.current_data,
+            binary_threshold=self.binary_threshold,
+            binary_threshold_linear=self.binary_threshold_linear,
+            blur_sigma=self.blur_sigma,
+            blur_kernel=self.blur_kernel
+        )
+
+        # Calculate the center with the offset
+        center = self.current_data_height // 2 + center_offset
+
+        # if debug:
+        #     plt.title("Filtered Data")
+        #     plt.imshow(filtered_data, cmap='binary', aspect='auto', origin='lower')
+        #     plt.hlines(center, 0, self.current_data_width, colors='red')
+        #     plt.show()
+
+        
+        processed_data = self.process_image(data=filtered_data,
+                                           rescaling_factor=resolution_factor, 
+                                           morph_kernel_size=morph_kernel, 
+                                           morph_iterations=morph_iterations, 
+                                           blur_kernel_size=self.blur_kernel, 
+                                           blur_sigma=self.blur_sigma, 
+                                           threshold_value=second_threshold,
+                                           second_blur=second_blur,
+                                           skip_processing=skip_advanced_processing)
+
+
+        # Add a padding to the binary image
+        border_size = 10  # Adjust as needed
+        padded_data = cv2.copyMakeBorder(processed_data, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT, value=0)
+
+        # # Calculate the center with the offset
+        center_processed = self.current_data_height // 2 * resolution_factor + (center_offset * resolution_factor) + border_size
+
+        if debug:
+            plt.title("Pre-processed Data")
+            plt.imshow(padded_data, cmap='binary', aspect='auto',origin='lower')
+            plt.hlines(center_processed, 0, (self.current_data_width + border_size)* resolution_factor , colors='red')
+            plt.show()
+
+
+        contours, hierarchy = cv2.findContours(padded_data, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+
+        # #Filter out contours that are too small by area
+        filtered_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+
+        # closed_contours = filtered_contours
+
+
+
+
+
+        # Sort the closed contours from left to right based on their minimum x-coordinate
+        sorted_contours = sorted(filtered_contours, key=lambda cnt: cnt[:, :, 0].min())
+
+        
+
+
+        # Adjust contour points after removing padding
+        adjusted_contours = []
+        for contour in sorted_contours:
+            adjusted_contour = contour - border_size
+            adjusted_contours.append(adjusted_contour)
+
+        if debug:
+            plt.title("Filtered Contours")
+            for i, contour in enumerate(adjusted_contours):
+                plt.plot(contour[:, :, 0], contour[:, :, 1], 'r')
+                plt.text(contour[0][0][0], contour[0][0][1], f"#{i}")
+            plt.show()
+
+
+
+
+        # print(extraction_data.shape, center_processed)
+
+        linecut = padded_data[center_processed,:]
+
+
+
+
+        # Find the left and right vertices using the linecut
+        left_vertices = []
+        right_vertices = []
+        in_pulse = False
+        for i, value in enumerate(linecut):
+            if value > 0 and not in_pulse:
+                in_pulse = True
+                left_vertices.append((i- border_size, center_processed - border_size))
+            elif value == 0 and in_pulse:
+                in_pulse = False
+                right_vertices.append((i- border_size, center_processed - border_size))                      
+            
+            if len(right_vertices) >= len(adjusted_contours):
+                break      
+    
+                # # Remove the border to restore the original image size
+        extraction_data = padded_data[border_size:-border_size, border_size:-border_size]
+        center_processed = center_processed - border_size
+
+        
+
+     
+        top_vertices = []
+        bottom_vertices = []
+        for contour in adjusted_contours:
+            top_tip = tuple(contour[contour[:, :, 1].argmin()][-1])
+            bottom_tip = tuple(contour[contour[:, :, 1].argmax()][-1])            
+            top_vertices.append(top_tip)
+            bottom_vertices.append(bottom_tip)
+
+        if naive_extraction:
+            # Find width and height of each closed contour
+            left_vertices_var = []
+            right_vertices_var = []
+            top_vertices_var = []
+            bottom_vertices_var = []
+            
+            for contour in adjusted_contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                center = y + h // 2
+                left_vertex = (x, center)
+                right_vertex = (x + w, center)
+                top_vertex = (x + w // 2, y)
+                bottom_vertex = (x + w // 2, y + h)
+                left_vertices_var.append(left_vertex)
+                right_vertices_var.append(right_vertex)
+                top_vertices_var.append(top_vertex)
+                bottom_vertices_var.append(bottom_vertex)       
+
+            left_vertices = left_vertices_var
+            right_vertices = right_vertices_var
+            top_vertices = top_vertices_var
+            bottom_vertices = bottom_vertices_var       
+
+        if debug:
+            plt.title("Vertices")
+            plt.imshow(extraction_data, cmap='binary', aspect='auto', origin='lower')
+            for i in range(len(left_vertices)):
+                plt.hlines(center_processed, 0, (self.current_data_width) * resolution_factor, colors='red')
+                plt.plot(left_vertices[i][0], left_vertices[i][1], 'go')  # Green for left vertices
+                plt.plot(top_vertices[i][0], top_vertices[i][1], 'ro')  # Red for top vertices
+                plt.plot(right_vertices[i][0], right_vertices[i][1], 'bo')  # Blue for right vertices
+                plt.plot(bottom_vertices[i][0], bottom_vertices[i][1], 'yo')  # Yellow for bottom vertices
+
+        if any([len(left_vertices) != len(right_vertices), len(left_vertices) != len(top_vertices), len(left_vertices) != len(bottom_vertices)]):
+            raise ValueError(f"The number of vertices detected does not match. \n Left: {len(left_vertices)} \n Right: {len(right_vertices)} \n Top: {len(top_vertices)} \n Bottom: {len(bottom_vertices)}")
+
+        detected_coulomb_diamonds = []
+        for number in range(len(left_vertices)):
+            left_vertex = left_vertices[number]
+            right_vertex = right_vertices[number]
+            top_vertex = bottom_vertices[number]  # Inverted due to the image being inverted
+            bottom_vertex = top_vertices[number]
+            if debug:
+                plt.plot(left_vertex[0], left_vertex[1], 'go')  # Green for left vertex
+                plt.plot(top_vertex[0], top_vertex[1], 'ro')  # Red for top vertex
+                plt.plot(right_vertex[0], right_vertex[1], 'bo')  # Blue for right vertex
+                plt.plot(bottom_vertex[0], bottom_vertex[1], 'yo')  # Yellow for bottom vertex
+
+            gate_values = [self.gate_data[0] + v[0] * self.gate_voltage_per_pixel for v in [left_vertex, top_vertex, right_vertex, bottom_vertex]]
+            ohmic_values = [v[1] * self.ohmic_voltage_per_pixel - self.ohmic_data[-1] for v in [left_vertex, top_vertex, right_vertex, bottom_vertex]]
+            diamond_vertices_voltage = np.vstack((gate_values, ohmic_values)).T
+
+            detected_coulomb_diamonds.append(
+            CoulombDiamond(
+                name=f"{number}",
+                left_vertex=diamond_vertices_voltage[0],
+                top_vertex=diamond_vertices_voltage[1],
+                right_vertex=diamond_vertices_voltage[2],
+                bottom_vertex=diamond_vertices_voltage[3],
+                oxide_thickness=self.oxide_thickness,
+                epsR=self.epsR
+            )
+            )
+        plt.show()
+        self.diamonds = detected_coulomb_diamonds
+        return detected_coulomb_diamonds
+    
+
+## GOOD VERSION
+# def extract_diamonds_direct(self, 
+#                                 debug: bool = False,
+#                                 center_offset: int = 0,
+#                                 edge_threshold_low: int = 0,
+#                                 edge_threshold_high: int = 0,
+#                                 naive_extraction: bool = False,
+#                                 resolution_factor: int = 2,
+#                                 min_area: int = 100,
+#                                 contour_epsilon_factor: float = 0.02,
+#                                 morph_iterations: int = 2) -> None:  
+        
+    
+#         # Run filter_raw_data on the full dataset
+#         filtered_data = self.filter_raw_data(
+#             self.current_data,
+#             binary_threshold=self.binary_threshold,
+#             binary_threshold_linear=self.binary_threshold_linear,
+#             blur_sigma=self.blur_sigma,
+#             blur_kernel=self.blur_kernel
+#         )
+
+#         # Calculate the center with the offset
+#         center = self.current_data_height // 2 + center_offset
+
+#         if debug:
+#             plt.title("Filtered Data")
+#             plt.imshow(filtered_data, cmap='binary', aspect='auto')
+#             plt.hlines(center, 0, self.current_data_width, colors='red')
+#             plt.show()
+
+        
+#         processed_data = self.process_image(data=filtered_data,
+#                                            rescaling_factor=resolution_factor, 
+#                                            morph_kernel_size=(5, 5), 
+#                                            morph_iterations=morph_iterations, 
+#                                            blur_kernel_size=(7, 7), 
+#                                            blur_sigma=1, 
+#                                            threshold_value=200)
+
+#         # if debug:
+#         #     plt.title("Filtered Data Connected")
+#         #     plt.imshow(filtered_data, cmap='binary', aspect='auto')
+#         #     plt.hlines(center, 0, self.current_data_width, colors='red')
+#         #     plt.show()
+
+#         # Add a padding to the binary image
+#         border_size = 10  # Adjust as needed
+#         padded_data = cv2.copyMakeBorder(processed_data, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT, value=0)
+
+#         # # Calculate the center with the offset
+#         center_processed = self.current_data_height // 2 * resolution_factor + (center_offset * resolution_factor) + border_size
+
+#         if debug:
+#             plt.title("Enhanced Filtered Data")
+#             plt.imshow(padded_data, cmap='binary', aspect='auto')
+#             plt.hlines(center_processed, 0, self.current_data_width * resolution_factor, colors='red')
+#             plt.show()
+
+#         # edges = self.extract_edges(filtered_data,
+#         #                            threshold1=edge_threshold_low,
+#         #                            threshold2=edge_threshold_high,
+#         #                            apertureSize=3)        
+        
+#         # if debug:
+#         #     plt.title("Edges")
+#         #     plt.imshow(filtered_data, cmap='binary', aspect='auto')
+#         #     plt.hlines(center, 0, self.current_data_width, colors='red')
+#         #     plt.show()
+        
+#         contours, hierarchy = cv2.findContours(padded_data, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+#         # if debug:
+#         #     plt.title("Contours")
+#         #     for i,contour in enumerate(contours):
+#         #         plt.plot(contour[:, :, 0], contour[:, :, 1], 'r')
+#         #     plt.show()
+
+#         # contours_approx = []
+#         # for contour in contours:
+#         #     # Approximate the contour to simplify its shape
+#         #     epsilon = contour_epsilon_factor * cv2.arcLength(contour, True)
+#         #     contours_approx.append(cv2.approxPolyDP(contour, epsilon, True))
+
+#         # if debug:
+#         #     plt.title("Approximated Contours")
+#         #     for i, contour in enumerate(contours_approx):
+#         #         plt.plot(contour[:, :, 0], contour[:, :, 1], 'r')
+#         #     plt.show()
+
+
+#         # #Filter out contours that do not form a closed shape
+#         # closed_contours = [cnt for i, cnt in enumerate(contours_approx) if hierarchy[0][i][2] != -1 and cv2.contourArea(cnt) > 0]
+
+#         # if debug:
+#         #     plt.title("Closed Contours")
+#         #     for contour in closed_contours:
+#         #         plt.plot(contour[:, :, 0], contour[:, :, 1], 'r')
+#         #     plt.show()
+
+#         # closed_contours = contours
+
+#         # for contour in closed_contours:
+#         #     print(cv2.contourArea(contour))
+#         # #Filter out contours that are too small by area
+#         filtered_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+
+#         # closed_contours = filtered_contours
+
+
+
+
+
+#         # if debug:
+#         #     plt.title("Filtered Contours")
+#         #     for i, contour in enumerate(closed_contours):
+#         #         plt.plot(contour[:, :, 0], contour[:, :, 1], 'r')
+#         #         plt.text(contour[0][0][0], contour[0][0][1], f"Contour #{i}")
+#         #     plt.show()
+        
+
+#         # # Create a blank image to draw the closed contours
+#         # closed_contours_image = np.zeros_like(edges)
+
+#         # # Draw the closed contours on the blank image
+#         # cv2.drawContours(closed_contours_image, contours, -1, (255), thickness=cv2.FILLED)
+
+
+#         # edges_closed = closed_contours_image
+
+#         # # Remove the border to restore the original image size
+#         # edges_closed = edges_closed[border_size:-border_size, border_size:-border_size]
+
+#         # if debug:
+#         #     plt.title("Edges")
+#         #     plt.imshow(edges_closed, cmap='binary', aspect='auto')
+#         #     plt.show()
+
+#         # Sort the closed contours from left to right based on their minimum x-coordinate
+#         sorted_contours = sorted(filtered_contours, key=lambda cnt: cnt[:, :, 0].min())
+
+#         # # Remove the border to restore the original image size
+#         extraction_data = padded_data[border_size:-border_size, border_size:-border_size]
+
+
+#         # Adjust contour points after removing padding
+#         adjusted_contours = []
+#         for contour in sorted_contours:
+#             adjusted_contour = contour - border_size
+#             adjusted_contours.append(adjusted_contour)
+
+#         if debug:
+#             plt.title("Adjusted Contours")
+#             for i, contour in enumerate(adjusted_contours):
+#                 plt.plot(contour[:, :, 0], contour[:, :, 1], 'r')
+#                 plt.text(contour[0][0][0], contour[0][0][1], f"Contour #{i}")
+#             plt.show()
+
+#         # if debug:
+#         #     plt.title("Extraction Data")
+#         #     plt.imshow(extraction_data, cmap='binary', aspect='auto')
+#         #     plt.hlines(center_processed, 0, self.current_data_width * resolution_factor, colors='red')
+#         #     plt.show()
+
+#         center_processed = center_processed - border_size
+
+#         # print(extraction_data.shape, center_processed)
+
+#         linecut = extraction_data[center_processed,:]
+
+#         # if debug:
+#         #     plt.title("Extraction Data")
+#         #     plt.imshow(extraction_data, cmap='binary', aspect='auto')
+#         #     plt.hlines(center_processed, 0, self.current_data_width * resolution_factor, colors='red')
+#         #     plt.show()
+
+#         #     plt.title("Linecut")
+#         #     plt.plot(linecut)
+#         #     plt.show()
+
+
+
+#         # Find the left and right vertices using the linecut
+#         left_vertices = []
+#         right_vertices = []
+#         in_pulse = False
+#         for i, value in enumerate(linecut):
+#             if value > 0 and not in_pulse:
+#                 in_pulse = True
+#                 left_vertices.append((i, center_processed))
+#             elif value == 0 and in_pulse:
+#                 in_pulse = False
+#                 right_vertices.append((i, center_processed))
+            
+
+
+
+#         top_vertices = []
+#         bottom_vertices = []
+#         for contour in adjusted_contours:
+#             top_tip = tuple(contour[contour[:, :, 1].argmin()][0])
+#             bottom_tip = tuple(contour[contour[:, :, 1].argmax()][0])            
+#             top_vertices.append(top_tip)
+#             bottom_vertices.append(bottom_tip)
+
+#         if naive_extraction:
+#             # Find width and height of each closed contour
+#             left_vertices_var = []
+#             right_vertices_var = []
+#             top_vertices_var = []
+#             bottom_vertices_var = []
+            
+#             for contour in adjusted_contours:
+#                 x, y, w, h = cv2.boundingRect(contour)
+#                 center = y + h // 2
+#                 left_vertex = (x, center)
+#                 right_vertex = (x + w, center)
+#                 top_vertex = (x + w // 2, y)
+#                 bottom_vertex = (x + w // 2, y + h)
+#                 left_vertices_var.append(left_vertex)
+#                 right_vertices_var.append(right_vertex)
+#                 top_vertices_var.append(top_vertex)
+#                 bottom_vertices_var.append(bottom_vertex)       
+
+#             left_vertices = left_vertices_var
+#             right_vertices = right_vertices_var
+#             top_vertices = top_vertices_var
+#             bottom_vertices = bottom_vertices_var       
+
+#         if debug:
+#             plt.title("Vertices")
+#             plt.imshow(extraction_data, cmap='binary', aspect='auto')
+#             for i in range(len(left_vertices)):
+#                 plt.hlines(center_processed, 0, self.current_data_width * resolution_factor, colors='red')
+#                 plt.plot(left_vertices[i][0], left_vertices[i][1], 'go')  # Green for left vertices
+#                 plt.plot(top_vertices[i][0], top_vertices[i][1], 'ro')  # Red for top vertices
+#                 plt.plot(right_vertices[i][0], right_vertices[i][1], 'bo')  # Blue for right vertices
+#                 plt.plot(bottom_vertices[i][0], bottom_vertices[i][1], 'yo')  # Yellow for bottom vertices
+
+#         if any([len(left_vertices) != len(right_vertices), len(left_vertices) != len(top_vertices), len(left_vertices) != len(bottom_vertices)]):
+#             raise ValueError(f"The number of vertices detected does not match. \n Left: {len(left_vertices)} \n Right: {len(right_vertices)} \n Top: {len(top_vertices)} \n Bottom: {len(bottom_vertices)}")
+
+#         detected_coulomb_diamonds = []
+#         for number in range(len(left_vertices)):
+#             left_vertex = left_vertices[number]
+#             right_vertex = right_vertices[number]
+#             top_vertex = bottom_vertices[number]  # Inverted due to the image being inverted
+#             bottom_vertex = top_vertices[number]
+#             if debug:
+#                 plt.plot(left_vertex[0], left_vertex[1], 'go')  # Green for left vertex
+#                 plt.plot(top_vertex[0], top_vertex[1], 'ro')  # Red for top vertex
+#                 plt.plot(right_vertex[0], right_vertex[1], 'bo')  # Blue for right vertex
+#                 plt.plot(bottom_vertex[0], bottom_vertex[1], 'yo')  # Yellow for bottom vertex
+
+#             gate_values = [self.gate_data[0] + v[0] * self.gate_voltage_per_pixel for v in [left_vertex, top_vertex, right_vertex, bottom_vertex]]
+#             ohmic_values = [v[1] * self.ohmic_voltage_per_pixel - self.ohmic_data[-1] for v in [left_vertex, top_vertex, right_vertex, bottom_vertex]]
+#             diamond_vertices_voltage = np.vstack((gate_values, ohmic_values)).T
+
+#             detected_coulomb_diamonds.append(
+#             CoulombDiamond(
+#                 name=f"{number}",
+#                 left_vertex=diamond_vertices_voltage[0],
+#                 top_vertex=diamond_vertices_voltage[1],
+#                 right_vertex=diamond_vertices_voltage[2],
+#                 bottom_vertex=diamond_vertices_voltage[3],
+#                 oxide_thickness=self.oxide_thickness,
+#                 epsR=self.epsR
+#             )
+#             )
+#         plt.show()
+#         self.diamonds = detected_coulomb_diamonds
+#         return detected_coulomb_diamonds
 
     def filter_duplicate_lines(self, lines, distance_threshold=None, angle_threshold=None):
         if lines is None:

@@ -1,0 +1,1 @@
+from diamondminer.miner import *
