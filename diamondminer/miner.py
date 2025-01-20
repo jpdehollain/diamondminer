@@ -644,9 +644,7 @@ class Miner:
         sorted_contours = sorted(filtered_contours, key=lambda cnt: cnt[:, :, 0].min())
 
         
-
-
-        # Adjust contour points after removing padding
+                # Adjust contour points after removing padding
         adjusted_contours = []
         for contour in sorted_contours:
             adjusted_contour = contour - border_size
@@ -662,29 +660,31 @@ class Miner:
 
 
 
+
         # print(extraction_data.shape, center_processed)
 
         linecut = padded_data[center_processed,:]
 
 
 
-
-        # Find the left and right vertices using the linecut
+        # Find the left and right vertices using the linecut and contours
         left_vertices = []
         right_vertices = []
-        in_pulse = False
-        for i, value in enumerate(linecut):
-            if value > 0 and not in_pulse:
-                in_pulse = True
-                left_vertices.append((i- border_size, center_processed - border_size))
-            elif value == 0 and in_pulse:
-                in_pulse = False
-                right_vertices.append((i- border_size, center_processed - border_size))                      
-            
-            if len(right_vertices) >= len(adjusted_contours):
-                break      
+
+        for contour in adjusted_contours:
+            contour_points = contour[:, 0, :]
+            leftmost_point = contour_points[np.argmin(contour_points[:, 0])]
+            rightmost_point = contour_points[np.argmax(contour_points[:, 0])]
+            left_vertices.append((leftmost_point[0], center_processed - border_size))
+            right_vertices.append((rightmost_point[0], center_processed - border_size))
+
+        if len(left_vertices) != len(right_vertices):
+            raise ValueError("The number of left and right vertices detected does not match.")
+
+
+        
     
-                # # Remove the border to restore the original image size
+        # # Remove the padding to restore the original image size
         extraction_data = padded_data[border_size:-border_size, border_size:-border_size]
         center_processed = center_processed - border_size
 
@@ -735,6 +735,9 @@ class Miner:
 
         if any([len(left_vertices) != len(right_vertices), len(left_vertices) != len(top_vertices), len(left_vertices) != len(bottom_vertices)]):
             raise ValueError(f"The number of vertices detected does not match. \n Left: {len(left_vertices)} \n Right: {len(right_vertices)} \n Top: {len(top_vertices)} \n Bottom: {len(bottom_vertices)}")
+
+
+
 
         detected_coulomb_diamonds = []
         for number in range(len(left_vertices)):
@@ -1119,9 +1122,9 @@ class Miner:
         
         return int(x_i)
     
-    def plot_diamonds(self):
-
-        fig, ax = plt.subplots()
+    def plot_diamonds(self, ax = None):
+        if ax is None:
+            fig, ax = plt.subplots()
         ax.imshow(
             self.current_data, 
             cmap='binary',
@@ -1133,6 +1136,9 @@ class Miner:
                 self.ohmic_data[0], 
                 self.ohmic_data[-1]
             ],
+            vmin=self.binary_threshold_linear,
+            vmax=self.binary_threshold_linear + 20e-12
+            
         )
         ax.set_title("Coulomb Diamonds")
         ax.set_xlabel("Gate Voltage (V)")
@@ -1142,5 +1148,5 @@ class Miner:
             diamond.print_summary()
             diamond.plot(ax)
 
-        plt.tight_layout()
-        plt.show()
+        # plt.tight_layout()
+        # plt.show()
