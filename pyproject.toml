@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "DiamondMiner"
+version = "0.0.3"
+description = "Extract Coulomb diamond information from measurements"
+authors = [
+    {name = "Andrija Paurevic", email = "apaurevic@uwaterloo.ca"}
+]
+readme = "README.md"
+urls = {github = "https://github.com/mainCSG/diamondminer"}
+dependencies = [
+    "opencv-python",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "PyQt5",
+    "scipy"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

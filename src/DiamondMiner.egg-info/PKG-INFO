@@ -1,10 +1,9 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.2
 Name: DiamondMiner
 Version: 0.0.3
 Summary: Extract Coulomb diamond information from measurements
-Home-page: https://github.com/mainCSG/diamondminer
-Author: Andrija Paurevic
-Author-email: apaurevic@uwaterloo.ca
+Author-email: Andrija Paurevic <apaurevic@uwaterloo.ca>
+Project-URL: github, https://github.com/mainCSG/diamondminer
 Description-Content-Type: text/markdown
 Requires-Dist: opencv-python
 Requires-Dist: matplotlib
@@ -52,8 +51,8 @@ Summary (#0):
 Constants
 ---------
 Elementary Charge (e): 1.60218e-19 C
-Permittivity of Free Space (Ïµ0): 8.85419e-12 F/m
-Relative Permittivity (ÏµR): 11.70000
+Permittivity of Free Space (ϵ0): 8.85419e-12 F/m
+Relative Permittivity (ϵR): 11.70000
 ---------
 
 ---------
@@ -70,7 +69,7 @@ Height: 0.00262 V
 --------------
 Dot Properties
 --------------
-Lever Arm (Î±): 0.01899 eV/V
+Lever Arm (α): 0.01899 eV/V
 Addition Voltage: 0.06905 V
 Charging Voltage: 0.00131 V
 Gate Capacitance: 2.32018 aF
@@ -88,14 +87,14 @@ Summary (#1):
 
 And the statistics can also be calculated as,
 ```text
-Average Lever Arm (Î±) : 0.02097 (eV/V) Â± 0.00063 (eV/V)
-Average Addition Voltage: 0.07004 (V) Â± 0.00074 (V)
-Average Charging Voltage: 0.00146 (V) Â± 0.00003 (V)
-Average Total Capacitance: 110.96383 (aF) Â± 2.33055 (aF)
-Average Gate Capacitance: 2.29400 (aF) Â± 0.02470 (aF)
-Average Source Capacitance: 27.89592 (aF) Â± 0.93941 (aF)
-Average Drain Capacitance: 77.84920 (aF) Â± 1.68834 (aF)
-Average Dot Size: 133.89269 (nm) Â± 2.81212 (nm)
+Average Lever Arm (α) : 0.02097 (eV/V) ± 0.00063 (eV/V)
+Average Addition Voltage: 0.07004 (V) ± 0.00074 (V)
+Average Charging Voltage: 0.00146 (V) ± 0.00003 (V)
+Average Total Capacitance: 110.96383 (aF) ± 2.33055 (aF)
+Average Gate Capacitance: 2.29400 (aF) ± 0.02470 (aF)
+Average Source Capacitance: 27.89592 (aF) ± 0.93941 (aF)
+Average Drain Capacitance: 77.84920 (aF) ± 1.68834 (aF)
+Average Dot Size: 133.89269 (nm) ± 2.81212 (nm)
 ```
 
 ### Charge Temperature

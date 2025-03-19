@@ -65,16 +65,17 @@ class CoulombDiamond:
     
     def dot_area(self) -> float:
         # Assumes parallel plate capicitaor geometry
-        dot_area = (self.oxide_thickness * self.total_capacitance()) / (self.eps0 * self.epsR)
+        dot_area = (self.oxide_thickness * self.gate_capacitance()) / (self.eps0 * self.epsR)
         return dot_area
 
     def dot_radius(self) -> float:
         if self.oxide_thickness is None:
             # Less accurate
-            if self.epsR is None:
-                return -1
-            #https://arxiv.org/pdf/1910.05841
-            return self.total_capacitance() / (8 * self.eps0 * self.epsR)
+            return -1 # We don't want to use the spherical approximation
+            # if self.epsR is None:
+            #     return -1
+            # #https://arxiv.org/pdf/1910.05841
+            # return self.gate_capacitance() / (8 * self.eps0 * self.epsR)
         else:
             #https://static-content.springer.com/esm/art%3A10.1038%2Fs41467-018-05700-9/MediaObjects/41467_2018_5700_MOESM1_ESM.pdf
             dot_radius = np.sqrt(self.dot_area() / np.pi)
